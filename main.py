@@ -8,7 +8,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from websocket import WebSocket, WebSocketConnectionClosedException
 
-INFO_FILE = "config.json"  # channel_url\nchannel_id\nguild_id\nvoice_channel_id\ndelay_between_messages\nsleep_time
+INFO_FILE = "info.txt"  # channel_url\nchannel_id\nguild_id\nvoice_channel_id\ndelay_between_messages\nsleep_time
 TOKENS_FILE = "tokens.txt"
 MESSAGES_FILE = "messages.txt"
 
@@ -51,7 +51,7 @@ def configure_info():
         channel_id = input("Text channel ID: ")
         guild_id = input("Guild ID: ")
         voice_channel_id = input("Voice channel ID: ")
-        delay_between_messages = int(input("Default delay (seconds) between messages: "))
+        delay_between_messages = 1  # Set to 1 second as requested
         sleep_time = int(input("Default sleep time (seconds) after full cycle: "))
         write_info(channel_url, channel_id, guild_id, voice_channel_id, delay_between_messages, sleep_time)
     except Exception as e:
@@ -68,7 +68,7 @@ def set_channel():
     new_cid = input(f"Text channel ID (current: {channel_id}): ").strip() or channel_id
     new_gid = input(f"Guild ID (current: {guild_id}): ").strip() or guild_id
     new_vid = input(f"Voice channel ID (current: {voice_channel_id}): ").strip() or voice_channel_id
-    write_info(new_url, new_cid, new_gid, new_vid, delay_between_messages, sleep_time)
+    write_info(new_url, new_cid, new_gid, new_vid, 1, sleep_time)  # Update delay to 1
 
 def show_help():
     print("Usage: python main.py [--config | --setC | --serial | --help]")
@@ -81,14 +81,13 @@ def get_connection():
 def send_message(token, channel_id, message):
     print(f"{get_timestamp()} Attempting to send '{message[:20]}...' with token {token[:10]}...")
     conn = get_connection()
-    # Updated super props for v10 (Android mobile)
     super_props = json.dumps({
         "os": "Android", "browser": "Chrome Mobile", "device": "", "system_locale": "en-US",
         "browser_user_agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
         "browser_version": "124.0.0.0", "os_version": "10", "referrer": "", "referring_domain": "",
         "referrer_current": "", "release_channel": "stable", "client_build_number": 999999,
         "client_event_source": None
-    }).encode('utf-8').decode('latin1')  # Base64-like, but raw for simplicity
+    }).encode('utf-8').decode('latin1')
     header_data = {
         "Content-Type": "application/json",
         "Authorization": token,
@@ -108,14 +107,14 @@ def send_message(token, channel_id, message):
         else:
             print(f"{get_timestamp()} FAILED ({status}): {response_body} for {token[:10]}...")
             if status == 401:
-                print("  -> Invalid token! Check tokens.txt.")
+                print("  -> Invalid token!")
             elif status == 403:
-                print("  -> No permission to send in channel.")
+                print("  -> No permission.")
             elif status == 429:
-                print("  -> Rate limited. Increase delay.")
+                print("  -> Rate limited. WARNING: 1s delay is too low!")
             return False
     except Exception as e:
-        print(f"{get_timestamp()} EXCEPTION sending: {e} for {token[:10]}...")
+        print(f"{get_timestamp()} EXCEPTION: {e} for {token[:10]}...")
         return False
     finally:
         conn.close()
@@ -124,34 +123,33 @@ def load_messages():
     try:
         with open(MESSAGES_FILE, "r") as file:
             msgs = [line.strip() for line in file.read().splitlines() if line.strip()]
-            print(f"{get_timestamp()} Loaded {len(msgs)} messages from messages.txt.")
+            print(f"{get_timestamp()} Loaded {len(msgs)} messages.")
             return msgs
     except FileNotFoundError:
-        print(f"{get_timestamp()} messages.txt not found! Create it with test messages.")
+        print(f"{get_timestamp()} messages.txt not found!")
         return []
 
 def load_tokens():
     try:
         with open(TOKENS_FILE, "r") as file:
             toks = [line.strip() for line in file.read().splitlines() if line.strip()]
-            print(f"{get_timestamp()} Loaded {len(toks)} tokens from tokens.txt.")
+            print(f"{get_timestamp()} Loaded {len(toks)} tokens.")
             return toks
     except FileNotFoundError:
         print(f"{get_timestamp()} tokens.txt not found!")
         return []
 
 def messenger_worker(token, channel_id, messages, delay_between_messages):
-    print(f"{get_timestamp()} Worker started for token {token[:10]}...")
+    print(f"{get_timestamp()} Worker for {token[:10]}...")
     for i, message in enumerate(messages, 1):
-        print(f"{get_timestamp()} Token {token[:10]} sending message {i}/{len(messages)}...")
+        print(f"{get_timestamp()} Sending msg {i}/{len(messages)}...")
         success = send_message(token, channel_id, message)
         if success:
-            random_sleep(delay_between_messages, 1, 5)
+            random_sleep(delay_between_messages, 0, 0)  # No random for 1s
         else:
-            print(f"{get_timestamp()} Skipping sleep due to fail for {token[:10]}...")
-            time.sleep(10)  # Backoff on fail
+            time.sleep(10)  # Backoff
 
-# VC Functions (unchanged, working)
+# VC Functions (unchanged)
 def vc_run(token, guild_id, voice_channel_id):
     sequence = [None]
     session_id = [None]
@@ -162,7 +160,6 @@ def vc_run(token, guild_id, voice_channel_id):
         jitter = 0.9
         while not stopper.wait(jitter * interval):
             if not heartbeat_acked[0]:
-                print(f"{get_timestamp()} Zombie VC for {token[:10]}... Reconnecting")
                 raise WebSocketConnectionClosedException("Missed ACK")
             try:
                 heartbeat_acked[0] = False
@@ -217,7 +214,6 @@ def vc_run(token, guild_id, voice_channel_id):
                 elif op == 11:
                     heartbeat_acked[0] = True
                 elif op == 9:
-                    print(f"{get_timestamp()} Invalid VC session: {token[:10]}...")
                     session_id[0] = None
                     resume_gateway_url[0] = None
                     time.sleep(5)
@@ -226,7 +222,7 @@ def vc_run(token, guild_id, voice_channel_id):
                     raise WebSocketConnectionClosedException("Reconnect")
         
         except Exception as e:
-            print(f"{get_timestamp()} VC Error {token[:10]}: {e}. Retry 10s...")
+            print(f"{get_timestamp()} VC Error {token[:10]}: {e}. Retry...")
             if '401' in str(e):
                 return
             time.sleep(10)
@@ -241,7 +237,7 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] in ["--config", "--setC", "--help"]:
         if sys.argv[1] == "--config" and input("Configure? (y/n): ").lower() == "y":
             configure_info()
-        elif sys.argv[1] == "--setC" and input("Set channels? (y/n): ").lower() == "y":
+        elif sys.argv[1] == "--setC" and input("Set? (y/n): ").lower() == "y":
             set_channel()
         elif sys.argv[1] == "--help":
             show_help()
@@ -249,14 +245,11 @@ def main():
 
     info = read_info()
     if not info:
-        print(f"{get_timestamp()} Setup info.txt with --config.")
         configure_info()
         return
 
     channel_url, channel_id, guild_id, voice_channel_id, default_delay, default_sleep = info
-    print(f"{get_timestamp()} Config: Text {channel_id}, VC {voice_channel_id} in guild {guild_id}.")
-
-    delay = int(input(f"Delay [ {default_delay} ]: ") or default_delay)
+    delay = 1  # Hard-set to 1 second
     sleep_time = int(input(f"Sleep [ {default_sleep} ]: ") or default_sleep)
 
     tokens = load_tokens()
@@ -265,32 +258,27 @@ def main():
 
     messages = load_messages()
     if not messages:
-        print("Fix messages.txt first!")
         return
 
-    print(f"{get_timestamp()} Starting VC + {'serial' if serial else 'parallel'} messenger...")
+    print(f"{get_timestamp()} Starting (WARNING: 1s delay may cause bans/rate limits!)")
 
-    # VC threads (always parallel)
     vc_executor = ThreadPoolExecutor(max_workers=len(tokens))
     for token in tokens:
         vc_executor.submit(vc_run, token, guild_id, voice_channel_id)
         time.sleep(1)
 
-    # Messenger
-    msg_executor = ThreadPoolExecutor(max_workers=1 if serial else len(tokens))  # Serial = 1 worker
+    msg_executor = ThreadPoolExecutor(max_workers=1 if serial else len(tokens))
 
     try:
         while True:
-            print(f"{get_timestamp()} Starting message cycle...")
+            print(f"{get_timestamp()} Cycle start...")
             if serial:
-                # Sequential: One token at a time
                 for token in tokens:
                     messenger_worker(token, channel_id, messages, delay)
             else:
-                # Parallel
                 futures = [msg_executor.submit(messenger_worker, token, channel_id, messages, delay) for token in tokens]
                 for future in futures:
-                    future.result()  # Wait for all
+                    future.result()
 
             print(f"{get_timestamp()} Cycle complete!")
             random_sleep(sleep_time, 0, 10)
