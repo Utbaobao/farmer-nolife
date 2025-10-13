@@ -24,6 +24,8 @@ there how to config that you need:
 
 i forgot to tell you, add your token in tokens.txt
 
+add some message in messages.txt
+
 step 4: run the script
 
 python main.py
